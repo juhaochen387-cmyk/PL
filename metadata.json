@@ -1,0 +1,6 @@
+{
+  "name": "2+1D Standard Model Particle Life — Dirac, Lattice Regulator & Anomaly Laboratory",
+  "description": "Strict 2+1D Standard Model simulation with consistent 2+1D Dirac Clifford algebra, spin projection, particle/antiparticle fields, dimensional reduction of electroweak interactions, Wilson fermion lattice regulator, and parity anomaly / Chern-Simons audit.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
