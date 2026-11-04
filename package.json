@@ -10,7 +10,7 @@
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit",
     "build:standalone": "vite build && cp dist/index.html standalone.html",
-    "test": "tsx tests/fock-correlations.ts && tsx tests/foundations.ts && tsx tests/joint-fock.ts && tsx tests/u1-link.ts && tsx tests/u1-plaquette.ts && tsx tests/gauge-performance-regression.ts"
+    "test": "tsx tests/fock-correlations.ts && tsx tests/foundations.ts && tsx tests/joint-fock.ts && tsx tests/u1-link.ts && tsx tests/u1-plaquette.ts && tsx tests/u1-matter-square.ts && tsx tests/gauge-performance-regression.ts"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",
