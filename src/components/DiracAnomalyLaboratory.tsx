@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { wilsonFreeAudit } from '../physics/Wilson2D';
 import { ExactPhysicsEngine } from '../physics/ExactPhysicsEngine';
 import { EngineSettings, ParticleInstance } from '../types/physics';
 import {
@@ -73,11 +74,7 @@ export const DiracAnomalyLaboratory: React.FC<DiracAnomalyLaboratoryProps> = ({
     wilsonR
   );
 
-  const anomalyAudit = performStandardModelAnomalyAudit(
-    latticeSpacingA,
-    wilsonR,
-    currentRegulator
-  );
+  const freeWilsonAudit = wilsonFreeAudit(selected?.mass ? Math.max(0.1, selected.mass) : 0.511, latticeSpacingA, wilsonR);
 
   // Active Modes & Sparse Fock Diagnostics
   const activeFermionicModes: FermionicModeIdentification[] = engine.getFermionicModes();
@@ -153,7 +150,7 @@ export const DiracAnomalyLaboratory: React.FC<DiracAnomalyLaboratoryProps> = ({
           `Projected into ℋ_phys in ${planar.iterations} iterations! Final max residuals: SU(3)=${Number(planar.finalSU3Residual).toExponential(2)}, SU(2)=${Number(planar.finalSU2Residual).toExponential(2)}, U(1)=${Number(planar.finalU1Residual).toExponential(2)}`
         );
       } else {
-        setProjectionFeedback('Projected quantum link state onto physical Gauss subspace.');
+        setProjectionFeedback('Classical-field relaxation attempted; inspect the resulting residuals. No joint quantum-state projection is established.');
       }
     }, 10);
   };
@@ -555,85 +552,24 @@ export const DiracAnomalyLaboratory: React.FC<DiracAnomalyLaboratoryProps> = ({
         </div>
       )}
 
-      {/* 6. Parity Anomaly and Chern-Simons Audit */}
-      {activeTab === 'anomaly' && (
-        <div className="space-y-2 text-[11px]">
-          <div className="rounded bg-sky-950/30 border border-sky-900/50 p-2 text-sky-200/90 leading-relaxed text-[10px]">
-            <strong>Parity Anomaly (Redlich 1984):</strong> Integrating out a single 2-component Dirac fermion of mass <code className="text-slate-200">M</code> in 2+1D generates an effective Chern–Simons action with level:
-            <div className="font-mono text-center my-1 text-amber-300">
-              k_(induced) = ½ sgn(M) [half-integer!]
-            </div>
-            To preserve gauge invariance under large gauge transformations, either a bare Chern-Simons term is present, or the theory is <strong>parity-doubled</strong> (L/R vector-like pairing) so that <code className="text-emerald-300">k_(net) = ∑_f [½ sgn(m₊) + ½ sgn(m₋)] = 0</code>!
-          </div>
-
-          <div className="p-2 rounded bg-slate-900/80 border border-slate-800 font-mono text-[9.5px] space-y-2">
-            <div className="flex justify-between items-center">
-              <span className="font-bold text-slate-200">3-Generation Standard Model Cancellation Audit:</span>
-              <span className={`px-2 py-0.5 rounded text-[9px] font-bold border ${
-                anomalyAudit.isParityAnomalyCanceled
-                  ? 'bg-emerald-950 text-emerald-400 border-emerald-800'
-                  : 'bg-rose-950 text-rose-400 border-rose-800'
-              }`}>
-                {anomalyAudit.isParityAnomalyCanceled ? '✓ Exact Cancellation (k_net = 0)' : '⚠ Anomaly Detected'}
-              </span>
-            </div>
-
-            <div className="grid grid-cols-3 gap-1.5 text-center">
-              <div className="p-1.5 rounded bg-slate-950 border border-slate-800">
-                <div className="text-slate-500 text-[8.5px]">Induced k_U(1)</div>
-                <div className="text-cyan-300 font-bold text-xs">{fmt(anomalyAudit.netChernSimonsU1, 4)}</div>
-              </div>
-              <div className="p-1.5 rounded bg-slate-950 border border-slate-800">
-                <div className="text-slate-500 text-[8.5px]">Induced k_SU(2)</div>
-                <div className="text-violet-300 font-bold text-xs">{fmt(anomalyAudit.netChernSimonsSU2, 4)}</div>
-              </div>
-              <div className="p-1.5 rounded bg-slate-950 border border-slate-800">
-                <div className="text-slate-500 text-[8.5px]">Induced k_SU(3)</div>
-                <div className="text-orange-300 font-bold text-xs">{fmt(anomalyAudit.netChernSimonsSU3, 4)}</div>
-              </div>
-            </div>
-
-            <div className="text-[9px] text-slate-400 leading-relaxed font-sans bg-slate-950/60 p-1.5 rounded border border-slate-800/80">
-              {anomalyAudit.auditSummary}
-            </div>
-
-            <div className="max-h-36 overflow-y-auto border border-slate-800 rounded">
-              <table className="w-full text-[8.5px] text-left">
-                <thead className="bg-slate-950 text-slate-400 sticky top-0">
-                  <tr>
-                    <th className="p-1">Fermion Species</th>
-                    <th className="p-1">Gen</th>
-                    <th className="p-1">Q</th>
-                    <th className="p-1">T₃</th>
-                    <th className="p-1">Y</th>
-                    <th className="p-1">Single k</th>
-                    <th className="p-1">Net Regulated</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-800/60">
-                  {anomalyAudit.records.map(r => (
-                    <tr key={r.species} className="hover:bg-slate-800/40">
-                      <td className="p-1 font-bold text-slate-200">{r.name}</td>
-                      <td className="p-1 text-slate-400">{r.generation}</td>
-                      <td className="p-1 text-sky-400">{fmt(r.electricCharge, 2)}</td>
-                      <td className="p-1 text-violet-400">{r.weakIsospinT3 !== 0 ? fmt(r.weakIsospinT3, 1) : '0'}</td>
-                      <td className="p-1 text-amber-400">{fmt(r.hyperchargeY, 2)}</td>
-                      <td className="p-1 text-slate-300">+{r.kInducedSingleFlavor.toFixed(1)}</td>
-                      <td className="p-1 text-emerald-400 font-bold">{r.netRegulatedAnomaly.toFixed(1)} (Paired)</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
+      {/* Free Wilson band diagnostic only; not a full gauge-theory anomaly audit. */}
+      {activeTab === 'anomaly' && <div className="space-y-2 text-[10px] text-slate-300">
+        <div className="rounded bg-amber-950/40 border border-amber-800 p-2 text-amber-200">
+          The live model does not implement a regulated joint quantum gauge theory. Its parity anomaly and induced gauge Chern–Simons levels are not established. L/R labels alone do not prove parity doubling or cancellation.
         </div>
-      )}
+        <div className="rounded bg-slate-900 p-2 font-mono">
+          Free two-band Wilson model: H = sin(kₓa)σₓ/a + sin(kᵧa)σᵧ/a + M(k)σz.
+          {freeWilsonAudit.points.map(p => <div key={p.name}>{p.name}: M = {fmt(p.mass,4)}, orientation = {p.orientation > 0 ? '+' : '−'}1</div>)}
+          <div>Occupied-band Chern number: {freeWilsonAudit.occupiedChern === null ? 'undefined (gap closes)' : freeWilsonAudit.occupiedChern}</div>
+        </div>
+        <p>This standalone free-band calculation uses the displayed Wilson parameters even when another regulator is selected. It is not a non-Abelian determinant, a full Standard Model anomaly audit, or evidence of cancellation. See README for the proposed theory and remaining work.</p>
+      </div>}
 
       {/* 7. Fermionic Modes HUD */}
       {activeTab === 'modes' && (
         <div className="space-y-2 text-[11px]">
           <div className="rounded bg-sky-950/30 border border-sky-900/50 p-2 text-sky-200/90 leading-relaxed text-[10px]">
-            <strong>Fermionic Mode Identification:</strong> Each mode in the live state vector is classified by:
+            <strong>Fermionic Mode Identification:</strong> This experimental registry describes candidate modes, not the live Fock state:
             <em> Species &amp; flavor, matter/antimatter, spatial/momentum orbital, 2+1D spinor component (α ∈ {'{0,1,2,3}'}), color state, and all internal quantum numbers (Q, T₃, Y, B, L, Wilson mass M(p), and doubler status).</em>
           </div>
 
@@ -984,7 +920,7 @@ export const DiracAnomalyLaboratory: React.FC<DiracAnomalyLaboratoryProps> = ({
             </div>
 
             <div className="text-[9px] text-slate-400 leading-relaxed font-sans bg-slate-950/60 p-1.5 rounded border border-slate-800/80">
-              ✓ <strong>Convergence Verified:</strong> Energy and particle expectation values plateau to within residual &lt; 0.05 while the sparse configuration storage prevents exponential blowup, maintaining constant milliseconds-per-step simulation latency.
+              This synthetic scaling demonstration is not a cutoff-convergence test of the live interacting model. Sparse storage may still grow exponentially.
             </div>
           </div>
         </div>
@@ -1000,7 +936,7 @@ export const DiracAnomalyLaboratory: React.FC<DiracAnomalyLaboratoryProps> = ({
                   11. Local Physical Gauss Constraints &amp; ℋ_phys Projection
                 </h5>
                 <span className="text-[9px] text-slate-400">
-                  Exact local generator annihilation G^a(x)|Ψ⟩ = 0 at every lattice site x
+                  Classical-field residual and relaxation diagnostics; quantum constraints are not established
                 </span>
               </div>
               <span className={`px-2 py-0.5 rounded text-[9px] font-mono font-bold ${
@@ -1008,7 +944,7 @@ export const DiracAnomalyLaboratory: React.FC<DiracAnomalyLaboratoryProps> = ({
                   ? 'bg-emerald-950 text-emerald-400 border border-emerald-800'
                   : 'bg-amber-950 text-amber-300 border border-amber-800'
               }`}>
-                {planarGauge?.isPhysicalGaugeState ? '✓ Physical State: |Ψ⟩ ∈ ℋ_phys' : 'Relaxation Drift Active'}
+                {planarGauge?.isPhysicalGaugeState ? 'Small classical residual' : 'Relaxation Drift Active'}
               </span>
             </div>
 
@@ -1041,7 +977,7 @@ export const DiracAnomalyLaboratory: React.FC<DiracAnomalyLaboratoryProps> = ({
                 disabled={isProjecting}
                 className="w-full py-1.5 px-3 rounded bg-amber-600 hover:bg-amber-500 disabled:bg-slate-800 text-slate-950 font-bold text-xs tracking-wide transition-all shadow-md shadow-amber-900/30 flex items-center justify-center gap-2"
               >
-                <span>{isProjecting ? 'Projecting into ℋ_phys...' : '⚡ Project State onto Physical Hilbert Space (ℋ_phys)'}</span>
+                <span>{isProjecting ? 'Projecting into ℋ_phys...' : 'Relax classical Gauss residuals'}</span>
               </button>
               {projectionFeedback && (
                 <div className="p-1.5 rounded bg-emerald-950/80 border border-emerald-800 text-emerald-200 text-[9px] font-mono">
@@ -1167,7 +1103,7 @@ export const DiracAnomalyLaboratory: React.FC<DiracAnomalyLaboratoryProps> = ({
 
             {/* Final Scientific Verdict */}
             <div className="text-[9px] text-slate-400 leading-relaxed font-sans bg-slate-950/60 p-1.5 rounded border border-slate-800/80">
-              ✓ <strong>Local Physical Constraints Enforced:</strong> Rather than relying on global charge summation or measuring unprojected residuals, local Gauss operators G^a(x)|Ψ⟩ = 0 are enforced at every lattice site for all 8 SU(3) generators, all 3 SU(2) generators, and U(1) hypercharge using gauge-covariant discrete left/right link divergences and exact physical Hilbert space projection.
+              These are classical field residuals and relaxation diagnostics, not a verified projection of a joint quantum gauge–matter state.
             </div>
           </div>
         </div>

@@ -82,34 +82,35 @@ const F2: number[][][] = (()=>{const f=Array.from({length:3},()=>Array.from({len
  * This satisfies Casimir conservation: sum_a (R^a)^2 = sum_a (L^a)^2.
  */
 function computeRightGeneratorComponents(U: CMat, L_components: ArrayLike<number>, generators: CMat[]): number[] {
-  const dim = U.length;
-  const numGen = generators.length;
-  const L = matZero(dim);
-  for (let a = 0; a < numGen; a++) {
-    const val = L_components[a];
-    if (val !== 0) {
-      for (let i = 0; i < dim; i++) {
-        for (let j = 0; j < dim; j++) {
-          L[i][j] = add(L[i][j], scale(generators[a][i][j], val));
-        }
-      }
+  const dim=U.length, numGen=generators.length, size=dim*dim;
+  const lr=new Float64Array(size),li=new Float64Array(size);
+  const pr=new Float64Array(size),pi=new Float64Array(size);
+  const rr=new Float64Array(size),ri=new Float64Array(size);
+  // Same L = Σ LᵃTᵃ, U†LU and generator trace as the matrix version,
+  // without allocating complex objects inside every small matrix multiply.
+  for(let a=0;a<numGen;a++) {
+    const v=L_components[a]; if(v===0)continue;
+    for(let i=0;i<dim;i++) for(let j=0;j<dim;j++) {
+      const t=generators[a][i][j], k=i*dim+j;lr[k]+=t.re*v;li[k]+=t.im*v;
     }
   }
-  const Udag = matDagger(U);
-  const LU = matMul(L, U);
-  const UdagLU = matMul(Udag, LU);
-  const R_components = new Array(numGen);
-  for (let a = 0; a < numGen; a++) {
-    let trRe = 0;
-    for (let i = 0; i < dim; i++) {
-      for (let j = 0; j < dim; j++) {
-        const prod = mul(generators[a][i][j], UdagLU[j][i]);
-        trRe += prod.re;
-      }
-    }
-    R_components[a] = -2 * trRe;
+  for(let i=0;i<dim;i++) for(let j=0;j<dim;j++) {
+    let re=0,im=0;
+    for(let k=0;k<dim;k++) {const u=U[k][j], ar=lr[i*dim+k],ai=li[i*dim+k];re+=ar*u.re-ai*u.im;im+=ar*u.im+ai*u.re;}
+    pr[i*dim+j]=re;pi[i*dim+j]=im;
   }
-  return R_components;
+  for(let i=0;i<dim;i++) for(let j=0;j<dim;j++) {
+    let re=0,im=0;
+    for(let k=0;k<dim;k++) {const u=U[k][i], ar=pr[k*dim+j],ai=pi[k*dim+j];re+=u.re*ar+u.im*ai;im+=u.re*ai-u.im*ar;}
+    rr[i*dim+j]=re;ri[i*dim+j]=im;
+  }
+  const out=new Array<number>(numGen);
+  for(let a=0;a<numGen;a++) {
+    let re=0;
+    for(let i=0;i<dim;i++) for(let j=0;j<dim;j++) {const t=generators[a][i][j],k=j*dim+i;re+=t.re*rr[k]-t.im*ri[k];}
+    out[a]=-2*re;
+  }
+  return out;
 }
 
 export interface GaugeQFTDiagnostics {
@@ -607,6 +608,55 @@ export class PlanarGaugeQFTEngine {
     return [m3, m2, m1];
   }
 
+  /** Build the linear right-generator map R=-Ad(U†)L once per projection.
+   * Gauge links do not change during the relaxation iterations; only E does.
+   * Keep this cache local to the call so no evolved field can leave it stale. */
+  private buildRightAdjoint(nc:3|8): Float64Array {
+    const generators=nc===3 ? G2 : G3, dim=nc===3?2:3;
+    const out=new Float64Array(this.sites*2*nc*nc);
+    const tr=new Float64Array(dim*dim),ti=new Float64Array(dim*dim);
+    const rr=new Float64Array(dim*dim),ri=new Float64Array(dim*dim);
+    for(let site=0;site<this.sites;site++) for(let axis=0;axis<2;axis++) {
+      const U=nc===3 ? this.su2Link(site,axis as 0|1) : this.su3Link(site,axis as 0|1);
+      const offset=(site*2+axis)*nc*nc;
+      for(let input=0;input<nc;input++) {
+        const T=generators[input];
+        // T U, followed by U† (T U). Scratch storage is reused.
+        for(let i=0;i<dim;i++) for(let j=0;j<dim;j++) {
+          let re=0,im=0;
+          for(let k=0;k<dim;k++) {const a=T[i][k], b=U[k][j];re+=a.re*b.re-a.im*b.im;im+=a.re*b.im+a.im*b.re;}
+          tr[i*dim+j]=re;ti[i*dim+j]=im;
+        }
+        for(let i=0;i<dim;i++) for(let j=0;j<dim;j++) {
+          let re=0,im=0;
+          for(let k=0;k<dim;k++) {const u=U[k][i], vr=tr[k*dim+j],vi=ti[k*dim+j];re+=u.re*vr+u.im*vi;im+=u.re*vi-u.im*vr;}
+          rr[i*dim+j]=re;ri[i*dim+j]=im;
+        }
+        for(let a=0;a<nc;a++) {
+          let re=0;
+          for(let i=0;i<dim;i++) for(let j=0;j<dim;j++) {
+            const t=generators[a][i][j];re+=t.re*rr[j*dim+i]-t.im*ri[j*dim+i];
+          }
+          out[offset+a*nc+input]=-2*re;
+        }
+      }
+    }
+    return out;
+  }
+  /** The same covariant divergence for one family with fixed link maps. */
+  private familyDivergence(nc:3|8, adjoint:Float64Array, output:Float64Array) {
+    const ex=nc===3?this.e2x:this.e3x, ey=nc===3?this.e2y:this.e3y;
+    for(let s=0;s<this.sites;s++) {
+      const xm=this.neighbor(s,-1,0),ym=this.neighbor(s,0,-1);
+      const xOffset=(xm*2)*nc*nc, yOffset=(ym*2+1)*nc*nc;
+      for(let a=0;a<nc;a++) {
+        let value=ex[s*nc+a]+ey[s*nc+a];
+        for(let b=0;b<nc;b++) value+=adjoint[xOffset+a*nc+b]*ex[xm*nc+b]+adjoint[yOffset+a*nc+b]*ey[ym*nc+b];
+        output[s*nc+a]=value;
+      }
+    }
+  }
+
   /**
    * Projects onto the physical gauge-invariant Hilbert space H_phys:
    *   G^a_SU(3)(x) |Psi> = 0  (for all a = 1..8)
@@ -647,11 +697,12 @@ export class PlanarGaugeQFTEngine {
 
     // 2. Non-Abelian SU(2) Gauge-Covariant Projector across all 3 generators
     let su2Iters = 0;
+    const adjoint2=this.buildRightAdjoint(3), div2=new Float64Array(this.sites*3), res2=new Float64Array(this.sites*3);
     for (let iter = 0; iter < maxIterations; iter++) {
       su2Iters++;
-      const { div2 } = this.computeGaugeCovariantDivergence();
+      this.familyDivergence(3,adjoint2,div2);
       let maxErr = 0;
-      const gRes = new Float64Array(this.sites * 3);
+      const gRes = res2;
       for (let s = 0; s < this.sites; s++) {
         for (let a = 0; a < 3; a++) {
           const res = div2[s * 3 + a] - this.rho2[s * 3 + a];
@@ -672,11 +723,12 @@ export class PlanarGaugeQFTEngine {
 
     // 3. Non-Abelian SU(3) Gauge-Covariant Projector across all 8 generators
     let su3Iters = 0;
+    const adjoint3=this.buildRightAdjoint(8), div3=new Float64Array(this.sites*8), res3=new Float64Array(this.sites*8);
     for (let iter = 0; iter < maxIterations; iter++) {
       su3Iters++;
-      const { div3 } = this.computeGaugeCovariantDivergence();
+      this.familyDivergence(8,adjoint3,div3);
       let maxErr = 0;
-      const gRes = new Float64Array(this.sites * 8);
+      const gRes = res3;
       for (let s = 0; s < this.sites; s++) {
         for (let a = 0; a < 8; a++) {
           const res = div3[s * 8 + a] - this.rho3[s * 8 + a];
@@ -715,10 +767,13 @@ export class PlanarGaugeQFTEngine {
   }
   private linkDiagnostics():{w3:number;w2:number;w1:number;unit:number;gauge:number}{
     let w3=0,w2=0,w1=0,unit=0,gauge=0,count=0;
-    const link3=(s:number,axis:0|1)=>{const a=axis===0?this.a3x:this.a3y;return matUnitaryLink(Array.from({length:8},(_,i)=>a[s*8+i]),G3,this.couplings.g3*this.spacing);};
-    const link2=(s:number,axis:0|1)=>{const a=axis===0?this.a2x:this.a2y;return matUnitaryLink(Array.from({length:3},(_,i)=>a[s*3+i]),G2,this.couplings.g2*this.spacing);};
-    const transform3=(s:number)=>matUnitaryLink([.04*Math.sin(s*1.7),.03*Math.cos(s*.7),.02*Math.sin(s*.31),.02,0,.015,0,.01],G3,1);
-    const transform2=(s:number)=>matUnitaryLink([.05*Math.sin(s*.8),.03*Math.cos(s*.4),.02],G2,1);
+    // Each link and local test transformation is reused by neighboring plaquettes.
+    // Cache only for this diagnostic pass; the gauge fields may change next step.
+    const links3:CMat[]=[], links2:CMat[]=[], transforms3:CMat[]=[], transforms2:CMat[]=[];
+    const link3=(s:number,axis:0|1)=>links3[s*2+axis] ?? (links3[s*2+axis]=this.su3Link(s,axis));
+    const link2=(s:number,axis:0|1)=>links2[s*2+axis] ?? (links2[s*2+axis]=this.su2Link(s,axis));
+    const transform3=(s:number)=>transforms3[s] ?? (transforms3[s]=matUnitaryLink([.04*Math.sin(s*1.7),.03*Math.cos(s*.7),.02*Math.sin(s*.31),.02,0,.015,0,.01],G3,1));
+    const transform2=(s:number)=>transforms2[s] ?? (transforms2[s]=matUnitaryLink([.05*Math.sin(s*.8),.03*Math.cos(s*.4),.02],G2,1));
     const phase=(s:number)=>.07*Math.sin(s*.53);
     for(let y=0;y<this.n;y++)for(let x=0;x<this.n;x++){
       const s=this.idx(x,y),xp=this.neighbor(s,1,0),yp=this.neighbor(s,0,1);
@@ -1024,12 +1079,9 @@ export class PlanarGaugeQFTEngine {
     if(this.steps%3===0)this.updateDiagnostics();
   }
   private parentSMAnomalyAudit():string{
-    // 2+1D Standard Model Parity Anomaly & Induced Chern-Simons Audit:
-    // Single 2-component Dirac fermion induces k = 1/2 * sgn(M).
-    // In the 2+1D dimensionally reduced SM with parity-doubled representations (pairing L & R),
-    // sum over all 3 generations of quarks (3 colors) and leptons gives exact cancellation: k_net = 0.
-    return `2+1D parity anomaly audit: paired Dirac doublets cancel induced Chern–Simons terms exactly (k_U(1)=0, k_SU(2)=0, k_SU(3)=0); Wilson regulator decouples doublers M(X,Y,M) ~ 2r/a`;
+    return 'The live model has no complete 2+1D regulator or gauge-anomaly audit; induced Chern–Simons levels and parity cancellation are not established.';
   }
+
   getDiagnostics(particleCount=0):GaugeQFTDiagnostics{
     const dim=this.fockRe.length, nModes=this.fockModes.length;
     const norm=this.fockRe.reduce((s,v,i)=>s+v*v+this.fockIm[i]*this.fockIm[i],0);

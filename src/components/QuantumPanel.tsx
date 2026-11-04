@@ -7,6 +7,9 @@ import { FiniteMatterPhotonQED } from '../physics/FiniteMatterPhotonQED';
 import { FiniteFermionPhotonPairQED } from '../physics/FiniteFermionPhotonPairQED';
 import { FiniteMultiChannelFermionPhotonQED } from '../physics/FiniteMultiChannelFermionPhotonQED';
 import { DiracAnomalyLaboratory } from './DiracAnomalyLaboratory';
+import { JointFockBasis, JointFockState, evolvePairConversion, reducedDensityMatrix, type FermionMode } from '../physics/joint/JointFockState';
+import { evolveLinkStep, gaussNorms, type U1Link } from '../physics/joint/U1LinkTest';
+import { evolvePlaquette, plaquetteGaussNorms, type U1Plaquette } from '../physics/joint/U1PlaquetteTest';
 
 // Run the deterministic small-sector validation once, not on every panel render.
 const MATTER_PHOTON_TEST_DIAGNOSTICS = FiniteMatterPhotonQED.selfTest();
@@ -37,6 +40,79 @@ const MatterSourceInspector: React.FC<{engine: ExactPhysicsEngine}> = ({engine})
       {correlations && <div>Retained Fock-state pair coherences ⟨cᵢ cᵢ₊₆⟩: {Array.from({length:6},(_,i) => { const z=correlations.pair[i][i+6]; return <div key={i}>{i+1}: {fmt(z.re)} {z.im < 0 ? '−' : '+'} {fmt(Math.abs(z.im))}i</div>; })}</div>}
       <p className="text-slate-400">The pair correlators are exact for the retained Fock vector but are not fed into these sources: the model lacks the particle/antiparticle spinor mode functions and a vacuum subtraction prescription needed to construct local polarization currents. Off-diagonal normal correlations are available through getFockCorrelations().</p>
     </div>}
+  </details>;
+};
+
+// An isolated, exactly solvable joint-state example; it is not the live engine.
+const JointFockExample: React.FC = () => {
+  const [time, setTime] = React.useState(1);
+  const mode = (antiparticle:boolean):FermionMode => ({species:'electron',flavor:'electron',antiparticle,orbital:{kind:'site',x:0,y:0},spinor:0,color:null,internal:'singlet'});
+  const basis = React.useMemo(() => new JointFockBasis([mode(false),mode(true)],[{label:'test boson',cutoff:2}]), []);
+  const state = evolvePairConversion(JointFockState.vacuum(basis).boson(0,true),0,1,0,0.5,time);
+  const rho = reducedDensityMatrix(state,[],[0]);
+  const p1 = rho.get('0|1')?.get('0|1')?.re ?? 0;
+  const p0 = rho.get('0|0')?.get('0|0')?.re ?? 0;
+  return <details className="border border-violet-800 rounded-lg p-2 bg-slate-950">
+    <summary className="cursor-pointer text-violet-300 font-bold">Joint Fock test sector</summary>
+    <div className="text-[10px] space-y-1 mt-2">
+      <p className="text-amber-300">Isolated mathematical example, not the live spatial gauge simulation. The boson here is a test oscillator, not an additional physical gauge field.</p>
+      <p>Exact evolution of |vacuum, 1 boson⟩ ↔ |fermion, antifermion, 0 bosons⟩ under a pair-conversion Hamiltonian. The boson reduced density matrix traces over both fermion modes.</p>
+      <label>Time: {time.toFixed(2)} <input type="range" min="0" max="6" step="0.05" value={time} onChange={e=>setTime(Number(e.target.value))} /></label>
+      <div className="font-mono">P(1 boson): {p1.toFixed(5)} · P(pair): {p0.toFixed(5)} · norm: {state.normSquared().toFixed(6)}</div>
+      <p className="text-slate-400">No spatial propagation, gauge constraints, thresholds, or quantum back-reaction are modeled by this example.</p>
+    </div>
+  </details>;
+};
+
+const QuantumLinkExample: React.FC = () => {
+  const [time, setTime] = React.useState(1);
+  const basis = React.useMemo(() => {
+    const mode = (x:number):FermionMode => ({species:'test fermion',flavor:'f',antiparticle:false,orbital:{kind:'site',x,y:0},spinor:0,color:null,internal:'unit charge'});
+    return new JointFockBasis([mode(0),mode(1)],[{label:'integer electric flux register',cutoff:2}]);
+  }, []);
+  const {state,gauss,site0} = React.useMemo(() => {
+    const link:U1Link={site0Mode:0,site1Mode:1,fluxRegister:0,maxFlux:1,background0:0,background1:1};
+    let state = new JointFockState(basis,[{config:{fermions:2n,bosons:[1]},amplitude:{re:1,im:0}}]);
+    // Fixed small steps for this isolated example, not coupled to the app clock.
+    const steps=40;
+    for(let i=0;i<steps;i++) state=evolveLinkStep(state,link,.7,.9,time/steps);
+    const gauss=gaussNorms(state,link);
+    const site0=state.entries().filter(e=>(e.config.fermions&1n)!==0n).reduce((sum,e)=>sum+e.amplitude.re**2+e.amplitude.im**2,0);
+    return {state,gauss,site0};
+  }, [basis,time]);
+  return <details className="border border-emerald-800 rounded-lg p-2 bg-slate-950">
+    <summary className="cursor-pointer text-emerald-300 font-bold">Two-site U(1) quantum-link test</summary>
+    <div className="text-[10px] space-y-1 mt-2">
+      <p className="text-amber-300">Isolated open-link example, not the live lattice or a full U(1) gauge theory. Flux −1, 0, +1 is a truncated rotor; its raising operator is nonunitary at the boundary.</p>
+      <p>Gauge-covariant hopping entangles a fermion with electric flux. A static background charge at site 1 makes the chosen initial state locally neutral.</p>
+      <label>Time: {time.toFixed(2)} <input type="range" min="0" max="6" step="0.05" value={time} onChange={e=>setTime(Number(e.target.value))} /></label>
+      <div className="font-mono">P(site 0): {site0.toFixed(5)} · norm: {state.normSquared().toFixed(6)}</div>
+      <div className="font-mono">‖G₀ψ‖²: {gauss.site0.toExponential(2)} · ‖G₁ψ‖²: {gauss.site1.toExponential(2)}</div>
+      <p className="text-slate-400">The electric and hopping Hamiltonians use a second-order split; this test has no plaquette, non-Abelian fields, or live back-reaction.</p>
+    </div>
+  </details>;
+};
+
+const QuantumPlaquetteExample: React.FC = () => {
+  const [time, setTime] = React.useState(1);
+  const basis = React.useMemo(() => new JointFockBasis([],Array.from({length:4},(_,i)=>({label:`plaquette link ${i}`,cutoff:1}))), []);
+  const {probability, norm, gauss} = React.useMemo(() => {
+    const p:U1Plaquette={registers:[0,1,2,3],matterModes:[null,null,null,null],background:[0,0,0,0]};
+    const state=new JointFockState(basis,[{config:{fermions:0n,bosons:[0,0,1,1]},amplitude:{re:1,im:0}}]);
+    const next=evolvePlaquette(state,p,.8,time);
+    const target=next.entries().find(e=>e.config.bosons.join(',')==='1,1,0,0');
+    return {probability:target ? target.amplitude.re**2+target.amplitude.im**2 : 0,norm:next.normSquared(),gauss:plaquetteGaussNorms(next,p)};
+  },[basis,time]);
+  return <details className="border border-emerald-800 rounded-lg p-2 bg-slate-950">
+    <summary className="cursor-pointer text-emerald-300 font-bold">U(1) quantum plaquette test</summary>
+    <div className="text-[10px] space-y-1 mt-2">
+      <p className="text-amber-300">Isolated four-link spin-½ quantum-link example; not the live lattice. Fluxes are ±½, and link raising is nonunitary at the cutoff.</p>
+      <p>Magnetic ring exchange coherently rotates one closed flux loop into the opposite loop. Local Gauss norms are computed at all four sites.</p>
+      <label>Time: {time.toFixed(2)} <input type="range" min="0" max="6" step="0.05" value={time} onChange={e=>setTime(Number(e.target.value))} /></label>
+      <div className="font-mono">Opposite-loop probability: {probability.toFixed(5)} · norm: {norm.toFixed(6)}</div>
+      <div className="font-mono">‖Gₓψ‖²: {gauss.map(v=>v.toExponential(1)).join(' · ')}</div>
+      <p className="text-slate-400">No dynamical matter hopping, non-Abelian gauge fields, or coupling to the live simulation in this example.</p>
+    </div>
   </details>;
 };
 
@@ -89,6 +165,9 @@ export const QuantumPanel: React.FC<QuantumPanelProps> = ({
       />
 
       <MatterSourceInspector engine={engine} />
+      <JointFockExample />
+      <QuantumLinkExample />
+      <QuantumPlaquetteExample />
 
       {/* Exact finite unified 2+1D gauge/QFT layer */}
       {gaugeDiag && <details open className="border border-amber-800/80 rounded-lg p-2.5 bg-[#1b1508] space-y-2">
