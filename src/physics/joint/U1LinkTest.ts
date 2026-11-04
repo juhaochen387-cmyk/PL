@@ -1,6 +1,6 @@
 /**
  * Isolated two-site U(1) quantum-link test, in a fixed Jordan–Wigner basis.
- * Flux is represented by one bounded integer-valued register carried in the
+ * Flux is represented by one bounded integer-valued register (with integer or half-integer flux offset) carried in the
  * JointFockState occupation tuple (NOT an oscillator). U|e> = |e+1> unless
  * e is at the upper cutoff; U† reverses it. Thus [E,U]=U, including edges,
  * but U is not unitary at the truncation boundary.
@@ -15,8 +15,8 @@ export interface U1Link {site0Mode:number; site1Mode:number; fluxRegister:number
 function validate(state:JointFockState, link:U1Link) {
   const {site0Mode:i,site1Mode:j,fluxRegister:b,maxFlux:s,background0,background1}=link;
   if(!Number.isInteger(i)||!Number.isInteger(j)||i<0||j<0||i===j||i>=state.basis.fermions.length||j>=state.basis.fermions.length ||
-    !Number.isInteger(b)||b<0||b>=state.basis.bosons.length || !Number.isSafeInteger(s)||s<0 || state.basis.bosons[b].cutoff!==2*s ||
-    !Number.isSafeInteger(background0)||!Number.isSafeInteger(background1)) throw new RangeError('Invalid U(1) link definition');
+    !Number.isInteger(b)||b<0||b>=state.basis.bosons.length || !Number.isSafeInteger(2*s)||s<0 || state.basis.bosons[b].cutoff!==2*s ||
+    !Number.isFinite(background0)||!Number.isFinite(background1)) throw new RangeError('Invalid U(1) link definition');
 }
 const configKey=(c:Configuration)=>`${c.fermions.toString(16)}|${c.bosons.join(',')}`;
 function parity(f:bigint,k:number) {let x=f&((1n<<BigInt(k))-1n), s=1;while(x){x&=x-1n;s=-s;}return s;}

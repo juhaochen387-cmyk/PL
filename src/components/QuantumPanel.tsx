@@ -10,6 +10,7 @@ import { DiracAnomalyLaboratory } from './DiracAnomalyLaboratory';
 import { JointFockBasis, JointFockState, evolvePairConversion, reducedDensityMatrix, type FermionMode } from '../physics/joint/JointFockState';
 import { evolveLinkStep, gaussNorms, type U1Link } from '../physics/joint/U1LinkTest';
 import { evolvePlaquette, plaquetteGaussNorms, type U1Plaquette } from '../physics/joint/U1PlaquetteTest';
+import { createSquareState, evolveSquare, evolveSquareUnsplit, squareObservables, type SquareParameters } from '../physics/joint/U1MatterSquare';
 
 // Run the deterministic small-sector validation once, not on every panel render.
 const MATTER_PHOTON_TEST_DIAGNOSTICS = FiniteMatterPhotonQED.selfTest();
@@ -116,6 +117,40 @@ const QuantumPlaquetteExample: React.FC = () => {
   </details>;
 };
 
+const SquareSimulation: React.FC = () => {
+  const [time,setTime]=React.useState(1);
+  const [method,setMethod]=React.useState<'unsplit'|'split'>('unsplit');
+  const result=React.useMemo(()=>{
+    const p:SquareParameters={hopping:.7,magnetic:.5,electric:.9,masses:[.3,-.3,.3,-.3]};
+    let s=createSquareState(); const initial=squareObservables(s,p),steps=60;
+    let truncation:number|null=null;
+    if(method==='unsplit') {const evolution=evolveSquareUnsplit(s,p,time);s=evolution.state;truncation=evolution.relativeTruncationBound;}
+    else for(let i=0;i<steps;i++)s=evolveSquare(s,p,time/steps);
+    return {initial,now:squareObservables(s,p),truncation};
+  },[time,method]);
+  const fmt=(x:number)=>x.toFixed(4);
+  return <div className="text-[10px] space-y-1 mt-2">
+    <p className="text-amber-300">Isolated open 2×2 U(1) toy sector, not the live simulation or full Dirac/Standard Model. One staggered fermion shares a joint state with four spin-½ quantum links; no separate photon field is added.</p>
+    <p>Gauge-covariant hopping, electric energy, on-site mass and magnetic plaquette exchange come from one finite Hamiltonian. A static background charge makes the initial state locally physical.</p>
+    <label>Method: <select className="bg-slate-800 text-white" value={method} onChange={e=>setMethod(e.target.value as 'split'|'unsplit')}><option value="unsplit">Unsplit finite Hamiltonian</option><option value="split">60-step symmetric split</option></select></label><br />
+    <label>Time: {time.toFixed(2)} <input type="range" min="0" max="6" step="0.05" value={time} onChange={e=>setTime(Number(e.target.value))} /></label>
+    <div className="font-mono">Occupation sites 0–3: {result.now.occupations.map(fmt).join(' · ')}</div>
+    <div className="font-mono">Link flux (bottom, right, top, left): {result.now.flux.map(fmt).join(' · ')}</div>
+    <div className="font-mono">Matter current (head → tail): {result.now.currents.map(fmt).join(' · ')}</div>
+    <div className="font-mono">‖Gₓψ‖²: {result.now.gaussNorms.map(x=>x.toExponential(1)).join(' · ')}</div>
+    <div className="font-mono">Norm {fmt(result.now.norm)} · energy {fmt(result.now.energy)} · ΔE {fmt(result.now.energy-result.initial.energy)}</div>
+    {result.truncation !== null && <div className="font-mono">Relative Taylor truncation bound ≤ {result.truncation.toExponential(2)} (excludes floating-point roundoff)</div>}
+    <p className="text-slate-400">The current is an operator expectation, not density × velocity. The unsplit result approximates the finite Hamiltonian, not continuum QFT; the split method has finite-step error. No antiparticles, vacuum polarization, SU(2), SU(3), or live back-reaction.</p>
+  </div>;
+};
+const QuantumMatterSquareExample: React.FC = () => {
+  const [open,setOpen]=React.useState(false);
+  return <details onToggle={e=>setOpen(e.currentTarget.open)} className="border border-emerald-800 rounded-lg p-2 bg-slate-950">
+    <summary className="cursor-pointer text-emerald-300 font-bold">Joint 2D matter–gauge test</summary>
+    {open && <SquareSimulation />}
+  </details>;
+};
+
 interface QuantumPanelProps {
   engine: ExactPhysicsEngine;
   settings: EngineSettings;
@@ -168,6 +203,7 @@ export const QuantumPanel: React.FC<QuantumPanelProps> = ({
       <JointFockExample />
       <QuantumLinkExample />
       <QuantumPlaquetteExample />
+      <QuantumMatterSquareExample />
 
       {/* Exact finite unified 2+1D gauge/QFT layer */}
       {gaugeDiag && <details open className="border border-amber-800/80 rounded-lg p-2.5 bg-[#1b1508] space-y-2">
