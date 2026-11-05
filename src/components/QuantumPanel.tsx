@@ -447,6 +447,7 @@ export const QuantumPanel: React.FC<QuantumPanelProps> = ({
             <span>c_wave = 12.0 px/tick</span>
           </div>
           <div className="text-amber-300/90 pt-1">This is the exact finite U(1) FDTD Maxwell sector. Source deposition, damping, and the discrete Gauss projection are exact finite model definitions; the field is a finite classical field sector, not a continuum photon field.</div>
+          <div className="text-amber-300/90">Gauss projection removes the uniform charge mode (mean ρ/ε₀ = {fmt(engine.emField.gaussUncompensatedMean, 4)}). Bounce uses closed, zero-normal-flux electric boundaries; net charge is balanced by an implicit uniform background.</div>
         </div>
 
         {/* Selected Particle Local Field & Lorentz Telemetry */}
