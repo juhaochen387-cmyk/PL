@@ -250,8 +250,6 @@ export const DEFAULT_ENGINE_SETTINGS: EngineSettings = {
 export const RADIATION_LIMITS = Object.freeze({
   maxPackets: 160,
   transportSpeed: 12.0,
-  photonLifetime: 170,
-  gluonLifetime: 105,
   cooldown: 2.5,
   reserveEnergy: 0.01
 });
@@ -773,7 +771,7 @@ export class ExactPhysicsEngine {
     // Determine whether this is a real emitted radiation particle before using it
     // to calculate the effective simulation mass. Keep this declaration above
     // every read to avoid JavaScript's temporal-dead-zone ReferenceError.
-    const isRadiation = params.isRadiation === true || ((params.kind === 'photon' || params.kind === 'gluon') && params.isVirtual === false);
+    const isRadiation = params.isRadiation ?? ((params.kind === 'photon' || params.kind === 'gluon') && params.isVirtual !== true);
     let dynMassMeV = config.massMeV;
     let effectiveSimMass = isRadiation ? 0 : baseSimMass === 0 ? 0.2 : baseSimMass;
 
@@ -788,7 +786,9 @@ export class ExactPhysicsEngine {
 
     const radius = config.massMeV > 10000 ? 9 : config.massMeV > 500 ? 7.5 : config.kind === 'photon' ? 5 : config.kind === 'gluon' ? 6 : 6.5;
     const isVirtual = isRadiation ? false : params.isVirtual !== undefined ? params.isVirtual : params.kind === 'gluon';
-    const lifetime = params.lifetime !== undefined ? params.lifetime : isRadiation ? params.kind === 'gluon' ? RADIATION_LIMITS.gluonLifetime : RADIATION_LIMITS.photonLifetime : params.kind === 'gluon' ? 65 : undefined;
+    // Real massless packets are stable by default. A caller may opt into an
+    // explicit finite lifetime for a deliberately temporary packet.
+    const lifetime = params.lifetime;
     let decayRate = 0;
     if (this.weak) {
       const chs = this.weak.calculateDecayChannels({ kind: params.kind } as ParticleInstance);
@@ -1182,34 +1182,27 @@ export class ExactPhysicsEngine {
     return Math.max(0, Math.min(this.height, y));
   }
 
-  canRadiate(p: ParticleInstance): boolean {
-    if (p._removed || p.pinned || p.isRadiation || p.isVirtual) return false;
-    if (p.radiationCooldown > 0) return false;
-
-    // p.localE / p.localB are sampled from the Maxwell lattice after
-    // depositSources() has deposited THIS particle as a source. They therefore
-    // include a discretized self-field and are not evidence of an external
-    // scattering field. Treating them as external caused an isolated quark to
-    // radiate from its own grid self-force. Require an independent real matter
-    // partner, or the explicit uniform background B field configured by the
-    // user. A future external-E-field control should be tracked separately.
+  /** Identify the independent source for each phenomenological radiation channel.
+   * A constituent of the same registered nucleon is not an external collision.
+   * The Maxwell self-field and nearby virtual particles are not external sources. */
+  radiationChannels(p: ParticleInstance): { photon: boolean; gluon: boolean } {
+    if (p._removed || p.pinned || p.isRadiation || p.isVirtual || p.radiationCooldown > 0)
+      return { photon: false, gluon: false };
+    const nucleon = this.macroparticles.find(m =>
+      (m.type === 'proton' || m.type === 'neutron') && m.constituentIds.includes(p.id));
+    const external = (q: ParticleInstance) => q.id !== p.id && !q._removed && !q.isVirtual && !q.isRadiation &&
+      !nucleon?.constituentIds.includes(q.id);
     const emPartner = this.settings.bremsstrahlungEnabled && Math.abs(p.charge) > 0 &&
-      this.particles.some(q => {
-        if (q.id === p.id || q._removed || q.isVirtual || q.isRadiation || Math.abs(Number(q.charge || 0)) < 1e-12) return false;
-        const d = this.relativePosition(p, q);
-        return Math.hypot(d.dx, d.dy) < 28;
-      });
+      this.particles.some(q => { const d=this.relativePosition(p,q); return external(q) && Math.abs(Number(q.charge || 0)) > 1e-12 && Math.hypot(d.dx,d.dy) < 28; });
     const colorPartner = this.settings.gluonRadiationEnabled && p.family === 'quark' &&
-      this.particles.some(q => {
-        if (q.id === p.id || q._removed || q.isVirtual || q.isRadiation || q.family !== 'quark') return false;
-        const d = this.relativePosition(p, q);
-        return Math.hypot(d.dx, d.dy) < 36;
-      });
-    // A configured uniform magnetic field can produce synchrotron emission,
-    // but it is not a source of QCD gluon radiation.
-    const synchrotronField = this.settings.bremsstrahlungEnabled && Math.abs(p.charge) > 0 &&
+      this.particles.some(q => { const d=this.relativePosition(p,q); return external(q) && q.family === 'quark' && Math.hypot(d.dx,d.dy) < 36; });
+    const magneticField = this.settings.bremsstrahlungEnabled && Math.abs(p.charge) > 0 &&
       Math.abs(Number(this.settings.magneticFieldBiasZ || 0)) > 1e-8;
-    return emPartner || colorPartner || synchrotronField;
+    return { photon: !!(emPartner || magneticField), gluon: !!colorPartner };
+  }
+  canRadiate(p: ParticleInstance): boolean {
+    const channels=this.radiationChannels(p);
+    return channels.photon || channels.gluon;
   }
 
   depositRadiationPacket(p: ParticleInstance, reason = 'wall') {
@@ -1616,6 +1609,8 @@ export class ExactPhysicsEngine {
     // final state before consuming either incoming particle. This prevents a
     // failed/non-finite QED evaluation from deleting matter without products.
     if (a._removed || b._removed || a.id === b.id || !this.particles.includes(a) || !this.particles.includes(b)) return false;
+    if (!this.settings.electromagnetismEnabled || !this.settings.qedInteractionsEnabled ||
+        a.isVirtual || b.isVirtual || a.isRadiation || b.isRadiation || !a.isFermion || !b.isFermion || !this.areAntiparticles(a, b)) return false;
     if (a.charge === 0 || b.charge === 0 || a.charge * b.charge >= 0) return false;
     const mx = (a.x + b.x) / 2;
     const my = (a.y + b.y) / 2;
@@ -2479,7 +2474,7 @@ export class ExactPhysicsEngine {
    */
   handleHiggsInteractions(dt: number): void {
     if (!this.settings.higgsFieldEnabled || !this.higgs) return;
-    const particles = this.particles.filter(p => !p._removed);
+    const particles = this.particles.filter(p => !p._removed && !p.isVirtual);
 
     // 1. Vector Boson Fusion & Higgsstrahlung & Higgs Self-Scattering
     for (let i = 0; i < particles.length; i++) {
@@ -2495,22 +2490,29 @@ export class ExactPhysicsEngine {
 
         const mx = (a.x + b.x) * 0.5;
         const my = (a.y + b.y) * 0.5;
+        const initialFour = addFour(this.fourMomentum(a), this.fourMomentum(b));
+        const simMass = (kind: ParticleKind) => {
+          const base = simulationMass(kind);
+          if (!this.settings.ewsbBrokenPhase && kind !== 'photon' && kind !== 'gluon') return 0.05;
+          if (this.settings.higgsVev !== undefined && this.settings.higgsVev !== HIGGS_VEV_STANDARD_GEV)
+            return Math.max(0.1, (base === 0 ? 0.2 : base) * this.settings.higgsVev / HIGGS_VEV_STANDARD_GEV);
+          return base === 0 ? 0.2 : base;
+        };
+        const higgsMass = simMass('higgs');
+        const massEnergy = invariantEnergy(initialFour);
+        // A real 2→1 final state must match the outgoing on-shell invariant mass;
+        // an arbitrary threshold or invented daughter momentum is not enough.
+        const oneHiggsOnShell = massEnergy > 0 && Math.abs(massEnergy-higgsMass*LIGHT_SPEED**2) <= 1e-8*Math.max(1,massEnergy);
 
         // 1a. Vector Boson Fusion: W+W- -> H0 or Z0 Z0 -> H0
         if (this.settings.higgsGaugeInteractionsEnabled) {
           const vbfRes = this.higgs.evaluateVectorBosonFusion(a, b, dt);
-          if (vbfRes.fused) {
+          if (vbfRes.fused && oneHiggsOnShell) {
             this.removeParticle(a.id);
             this.removeParticle(b.id);
 
-            this.addParticle({
-              kind: 'higgs',
-              x: mx,
-              y: my,
-              vx: vbfRes.higgsMomentum.px * 0.35,
-              vy: vbfRes.higgsMomentum.py * 0.35,
-              energy: vbfRes.higgsMomentum.E
-            });
+            const higgs = this.addParticle({ kind: 'higgs', x: mx, y: my });
+            this.setFourMomentum(higgs, initialFour);
 
             this.physicsStats.higgsVBFEvents = (this.physicsStats.higgsVBFEvents || 0) + 1;
             this.logEvent('higgs_vbf', mx, my, vbfRes.description, '#ec4899', 4.0);
@@ -2520,27 +2522,15 @@ export class ExactPhysicsEngine {
           // 1b. Associated Production / Higgsstrahlung: e+ + e- -> Z0 + H0
           if (this.settings.higgsProductionEnabled) {
             const hsRes = this.higgs.evaluateHiggsstrahlung(a, b, dt);
-            if (hsRes.produced) {
+            const finalState = hsRes.produced ? sampleInvariantPhaseSpace(initialFour, [simMass('z_boson'), higgsMass]) : null;
+            if (hsRes.produced && finalState) {
               this.removeParticle(a.id);
               this.removeParticle(b.id);
 
-              this.addParticle({
-                kind: 'z_boson',
-                x: mx - 6,
-                y: my,
-                vx: hsRes.zMomentum.px * 0.4,
-                vy: hsRes.zMomentum.py * 0.4,
-                energy: hsRes.zMomentum.E
-              });
-
-              this.addParticle({
-                kind: 'higgs',
-                x: mx + 6,
-                y: my,
-                vx: hsRes.hMomentum.px * 0.4,
-                vy: hsRes.hMomentum.py * 0.4,
-                energy: hsRes.hMomentum.E
-              });
+              const z = this.addParticle({ kind: 'z_boson', x: mx - 6, y: my });
+              const higgs = this.addParticle({ kind: 'higgs', x: mx + 6, y: my });
+              this.setFourMomentum(z, finalState[0]);
+              this.setFourMomentum(higgs, finalState[1]);
 
               this.physicsStats.higgsstrahlungs = (this.physicsStats.higgsstrahlungs || 0) + 1;
               this.logEvent('higgsstrahlung', mx, my, hsRes.description, '#f43f5e', 4.0);
@@ -2574,18 +2564,12 @@ export class ExactPhysicsEngine {
         // 1d. Gluon-Gluon Fusion (ggF): g + g -> [top triangle loop] -> H0
         if (this.settings.higgsProductionEnabled && a.kind === 'gluon' && b.kind === 'gluon') {
           const ggfRes = this.higgs.evaluateGluonFusion(a, b, dt);
-          if (ggfRes.fused) {
+          if (ggfRes.fused && oneHiggsOnShell) {
             this.removeParticle(a.id);
             this.removeParticle(b.id);
 
-            this.addParticle({
-              kind: 'higgs',
-              x: mx,
-              y: my,
-              vx: ggfRes.higgsMomentum.px * 0.3,
-              vy: ggfRes.higgsMomentum.py * 0.3,
-              energy: ggfRes.higgsMomentum.E
-            });
+            const higgs = this.addParticle({ kind: 'higgs', x: mx, y: my });
+            this.setFourMomentum(higgs, initialFour);
 
             this.physicsStats.higgsGluonFusions = (this.physicsStats.higgsGluonFusions || 0) + 1;
             this.logEvent('higgs_ggf', mx, my, ggfRes.description, '#ec4899', 4.5);
@@ -2658,20 +2642,7 @@ export class ExactPhysicsEngine {
             3.5
           );
         }
-      } else {
-        // Fallback linear threshold string breaking
-        const threshold = 2 * simulationMass('up') * LIGHT_SPEED ** 2;
-        if (U >= threshold && r > 90) {
-          this.bonds.delete(bond.key);
-          const mx = (a.x + b.x) / 2;
-          const my = (a.y + b.y) / 2;
-          const newQ1 = this.addParticle({ kind: 'up', x: mx - 6, y: my, color: 'blue' });
-          const newQ2 = this.addParticle({ kind: 'up', x: mx + 6, y: my, isAntiparticle: true, color: 'anti_blue' });
-          this.createBond(a, newQ1);
-          this.createBond(newQ2, b);
-          this.transferStats.stringBreaks++;
-          this.logEvent('string_break', mx, my, `QCD String Snapped: Field energy → u + ū pair!`, '#fb923c');
-        }
+
       }
     }
   }
@@ -2900,8 +2871,7 @@ export class ExactPhysicsEngine {
         p.x = this.wrapX(p.x + p.vx * subDt);
         p.y = this.wrapY(p.y + p.vy * subDt);
         if (p.lifetime && p.age >= p.lifetime) {
-          this.depositRadiationPacket(p, 'decay');
-          this.removeParticle(p.id);
+          this.removeParticle(p.id); // removeParticle records the deposited packet once.
         }
       }
 
@@ -3177,13 +3147,14 @@ export class ExactPhysicsEngine {
         }
 
         // Accelerated Bremsstrahlung & Gluon Emission with Quantum Coherence
-        if (this.settings.radiationEnabled && this.canRadiate(p)) {
+        const radiationChannels = this.settings.radiationEnabled ? this.radiationChannels(p) : {photon:false,gluon:false};
+        if ((radiationChannels.photon || radiationChannels.gluon) && this.getRadiationSnapshot().activePackets < RADIATION_LIMITS.maxPackets) {
           const dv = Math.hypot(p.vx - (p._stepVx || 0), p.vy - (p._stepVy || 0));
           // Require a resolved interaction-induced velocity change, not a
           // tiny floating-point drift. The cutoff is a numerical trigger for
           // this visualization model, not a claimed QFT emission spectrum.
           const resolvedKick = 0.002 * LIGHT_SPEED; // velocity threshold (not an energy threshold).
-          if (Number.isFinite(dv) && dv > resolvedKick) {
+          if (Number.isFinite(dv) && dv > resolvedKick && dv * this.settings.radiationStrength >= this.settings.radiationMinEnergy) {
             // Phenomenological visual-emission scale only; this kernel does not
             // enforce exact recoil / four-momentum conservation or QFT rates.
             const emitEnergy = Math.min(2.5, dv * this.settings.radiationStrength);
@@ -3192,7 +3163,7 @@ export class ExactPhysicsEngine {
             p.radiatedEnergy += emitEnergy;
             p.radiationCount++;
 
-            if (p.family === 'quark' && this.settings.gluonRadiationEnabled && Math.random() < 0.6) {
+            if (radiationChannels.gluon && (!radiationChannels.photon || Math.random() < 0.6)) {
               let emitVx = -p.vx * 0.8;
               let emitVy = -p.vy * 0.8;
               let gIndex = 1;
@@ -3231,7 +3202,7 @@ export class ExactPhysicsEngine {
                 gluonColor: gColor,
                 diagonalGluon: diag
               });
-            } else if (Math.abs(p.charge) > 0 && this.settings.bremsstrahlungEnabled) {
+            } else if (radiationChannels.photon) {
               p.lastRadiationKind = 'photon';
               this.radiationStats.photonCount++;
               this.radiationStats.photonEnergy += emitEnergy;
