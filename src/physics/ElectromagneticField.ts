@@ -7,7 +7,7 @@
 
 import { ParticleInstance } from '../types/physics';
 import { LIGHT_SPEED } from './catalog';
-import { exactFinitePoissonPeriodicRect, exactFinitePoissonDirichletRect } from './FiniteExact';
+import { exactFinitePoissonPeriodicRect, exactFinitePoissonNeumannRect } from './FiniteExact';
 
 export class ElectromagneticField {
   width: number;
@@ -86,6 +86,7 @@ export class ElectromagneticField {
   }
 
   clear() {
+    this.gaussUncompensatedMean = 0;
     this.Ex.fill(0);
     this.Ey.fill(0);
     this.Ez.fill(0);
@@ -265,39 +266,35 @@ export class ElectromagneticField {
     this.projectGaussConstraint(boundaryMode);
   }
 
-  /**
-   * Exact finite discrete Gauss projection.
-   * Enforces div_forward E = rho/epsilon0 for the declared finite lattice,
-   * using the exact finite periodic or Dirichlet Poisson solve.
-   */
+  /** Mean charge density that the periodic/closed-boundary zero mode cannot
+   * represent. The projection solves for rho minus this uniform background. */
+  gaussUncompensatedMean = 0;
+
+  /** Project the backward-divergence constraint using its matching forward
+   * gradient. In a torus or closed no-normal-flux box, only the zero-mean
+   * source can be projected; the unrepresented mean is reported above. */
   projectGaussConstraint(boundaryMode: 'torus' | 'bounce') {
-    const h = this.cellSize;
-    const cols = this.cols, rows = this.rows;
-    const torus = boundaryMode === 'torus';
-    const left = (i: number) => torus ? (i - 1 + cols) % cols : Math.max(0, i - 1);
-    const down = (j: number) => torus ? (j - 1 + rows) % rows : Math.max(0, j - 1);
-    const div = new Float64Array(this.totalCells);
-    for (let j = 0; j < rows; j++) {
-      for (let i = 0; i < cols; i++) {
-        const k = this.idx(i, j);
-        const kx = this.idx(left(i), j);
-        const ky = this.idx(i, down(j));
-        div[k] = (this.Ex[k] - this.Ex[kx]) / h + (this.Ey[k] - this.Ey[ky]) / h;
-      }
+    const h=this.cellSize, cols=this.cols, rows=this.rows, torus=boundaryMode==='torus';
+    if(!torus) {
+      // Ex/Ey are outgoing edge fluxes. A closed boundary has no outgoing
+      // right/top flux and the incoming left/bottom flux is zero.
+      for(let j=0;j<rows;j++) this.Ex[this.idx(cols-1,j)]=0;
+      for(let i=0;i<cols;i++) this.Ey[this.idx(i,rows-1)]=0;
     }
-    const src = new Float64Array(this.totalCells);
-    for (let k = 0; k < this.totalCells; k++) src[k] = this.rho[k] / this.epsilon0 - div[k];
-    const phi = torus
-      ? exactFinitePoissonPeriodicRect(src, cols, rows, h)
-      : exactFinitePoissonDirichletRect(src, cols, rows, h);
-    for (let j = 0; j < rows; j++) {
-      for (let i = 0; i < cols; i++) {
-        const k = this.idx(i, j);
-        const kx = this.idx(left(i), j);
-        const ky = this.idx(i, down(j));
-        this.Ex[k] -= (phi[k] - phi[kx]) / h;
-        this.Ey[k] -= (phi[k] - phi[ky]) / h;
-      }
+    const src=new Float64Array(this.totalCells);let chargeSum=0;
+    for(let j=0;j<rows;j++)for(let i=0;i<cols;i++) {
+      const k=this.idx(i,j);
+      const prevX=i>0?this.Ex[this.idx(i-1,j)]:(torus?this.Ex[this.idx(cols-1,j)]:0);
+      const prevY=j>0?this.Ey[this.idx(i,j-1)]:(torus?this.Ey[this.idx(i,rows-1)]:0);
+      const div=(this.Ex[k]-prevX+this.Ey[k]-prevY)/h;
+      const charge=this.rho[k]/this.epsilon0;chargeSum+=charge;src[k]=charge-div;
+    }
+    this.gaussUncompensatedMean=chargeSum/this.totalCells;
+    const phi=torus?exactFinitePoissonPeriodicRect(src,cols,rows,h):exactFinitePoissonNeumannRect(src,cols,rows,h);
+    for(let j=0;j<rows;j++)for(let i=0;i<cols;i++) {
+      const k=this.idx(i,j);
+      if(torus||i<cols-1) this.Ex[k]-=(phi[this.idx((i+1)%cols,j)]-phi[k])/h;
+      if(torus||j<rows-1) this.Ey[k]-=(phi[this.idx(i,(j+1)%rows)]-phi[k])/h;
     }
   }
 

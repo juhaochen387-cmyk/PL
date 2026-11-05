@@ -95,13 +95,13 @@ export function matUnitaryLink(coeff: number[], generators: CMat[], factor: numb
 }
 
 const trigCache = new Map<string, { cos: Float64Array; sin: Float64Array }>();
-function trigTable(n: number, kind: 'periodic' | 'dirichlet'): { cos: Float64Array; sin: Float64Array } {
+function trigTable(n: number, kind: 'periodic' | 'dirichlet' | 'neumann'): { cos: Float64Array; sin: Float64Array } {
   const key = `${kind}:${n}`;
   const hit = trigCache.get(key);
   if (hit) return hit;
   const cos = new Float64Array(n * n), sin = new Float64Array(n * n);
   for (let k = 0; k < n; k++) for (let i = 0; i < n; i++) {
-    const angle = kind === 'periodic' ? (2 * Math.PI * k * i / n) : (Math.PI * (k + 1) * (i + 1) / (n + 1));
+    const angle = kind === 'periodic' ? (2 * Math.PI * k * i / n) : kind === 'dirichlet' ? (Math.PI * (k + 1) * (i + 1) / (n + 1)) : (Math.PI * k * (i + 0.5) / n);
     cos[k * n + i] = Math.cos(angle);
     sin[k * n + i] = Math.sin(angle);
   }
@@ -165,6 +165,32 @@ export function exactFinitePoissonPeriodicRect(src: Float64Array, cols: number, 
       sr += ar * cr - ai * ci;
     }
     out[y * cols + x] = sr / norm;
+  }
+  return out;
+}
+
+/** Cell-centered zero-normal-flux (Neumann) solve of -lap(phi)=src-mean(src).
+ * DCT-II eigenvectors diagonalize the graph Laplacian; the constant mode is
+ * removed because a closed domain cannot support nonzero net charge. */
+export function exactFinitePoissonNeumannRect(src:Float64Array,cols:number,rows:number,spacing=1):Float64Array {
+  const sites=cols*rows;
+  if(src.length!==sites || cols<1 || rows<1 || !(spacing>0)) throw new Error('Neumann Poisson: invalid dimensions');
+  const tx=trigTable(cols,'neumann'),ty=trigTable(rows,'neumann');
+  const tmp=new Float64Array(sites),spectral=new Float64Array(sites),inverse=new Float64Array(sites),out=new Float64Array(sites);
+  for(let y=0;y<rows;y++) for(let kx=0;kx<cols;kx++) {
+    let sum=0;for(let x=0;x<cols;x++)sum+=src[y*cols+x]*tx.cos[kx*cols+x];
+    tmp[y*cols+kx]=sum*(kx===0?1/cols:2/cols);
+  }
+  for(let ky=0;ky<rows;ky++) for(let kx=0;kx<cols;kx++) {
+    let sum=0;for(let y=0;y<rows;y++)sum+=tmp[y*cols+kx]*ty.cos[ky*rows+y];
+    const lambda=(4-2*Math.cos(Math.PI*kx/cols)-2*Math.cos(Math.PI*ky/rows))/(spacing*spacing);
+    spectral[ky*cols+kx]=lambda>1e-14?sum*(ky===0?1/rows:2/rows)/lambda:0;
+  }
+  for(let y=0;y<rows;y++)for(let kx=0;kx<cols;kx++) {
+    let sum=0;for(let ky=0;ky<rows;ky++)sum+=spectral[ky*cols+kx]*ty.cos[ky*rows+y];inverse[y*cols+kx]=sum;
+  }
+  for(let y=0;y<rows;y++)for(let x=0;x<cols;x++) {
+    let sum=0;for(let kx=0;kx<cols;kx++)sum+=inverse[y*cols+kx]*tx.cos[kx*cols+x];out[y*cols+x]=sum;
   }
   return out;
 }
